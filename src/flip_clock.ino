@@ -1,10 +1,11 @@
 // FreeRTOS - Version: Latest
 // IRremote - Version: Latest
+// AccelStepper - Version: Latest
 
 #define DEBUG
 
+#include <AccelStepper.h>
 #include <Arduino_FreeRTOS.h>
-#include <Stepper.h>
 #include <queue.h>
 
 /***** TINY RECEIVER MACROS *****/
@@ -17,10 +18,12 @@
 
 /***** STEPPER CONSTANTS *****/
 
-#define STEPS_PER_REV 2048
-#define STEPPER_SPEED 15
+#define STEPS_PER_REV        2048
+#define STEPPER_MAX_SPEED    (STEPS_PER_REV / 4)
+#define STEPPER_ACCELERATION (STEPS_PER_REV / 2)
 
-Stepper steppers[] = {Stepper(STEPS_PER_REV, 22, 26, 24, 28), Stepper(STEPS_PER_REV, 23, 27, 25, 29)};
+AccelStepper steppers[]
+    = {AccelStepper(AccelStepper::FULL4WIRE, 22, 26, 24, 28), AccelStepper(AccelStepper::FULL4WIRE, 23, 27, 25, 29)};
 
 /***** DISPLAY CONSTANTS *****/
 
@@ -115,7 +118,7 @@ void TaskHandleInput(void* pvParameters) {
                     case 0x1C: /*5*/ writeDisplay(5); break;
                     case 0x5A: /*6*/ writeDisplay(6); break;
                     case 0x42: /*7*/ writeDisplay(7); break;
-                    case 0x52: /*8*/ writeDisplay(8); break;
+                    case 0x53: /*8*/ writeDisplay(8); break;
                     case 0x4A: /*9*/ writeDisplay(9); break;
                     case 0x45: /*power*/ toggleDisplayPower(); break;
                 }
@@ -129,7 +132,12 @@ void TaskHandleInput(void* pvParameters) {
 void TaskTestStep(void* pvParameters) {
     (void)pvParameters;
 
-    for (;;) { steppers[0].step(STEPS_PER_REV / 128); }
+    for (;;) {
+        for (auto& s : steppers) {
+            if (s.distanceToGo() == 0) s.moveTo(-s.currentPosition());
+            s.run();
+        }
+    }
 }
 
 /***** MAIN FUNCTIONS *****/
@@ -140,7 +148,11 @@ void setup() {
     // Set all SS pins to output
     for (int p : SS_PINS) { pinMode(p, OUTPUT); }
 
-    steppers[0].setSpeed(10);
+    for (auto& s : steppers) {
+        s.setMaxSpeed(STEPPER_MAX_SPEED);
+        s.setAcceleration(STEPPER_ACCELERATION);
+        s.moveTo(STEPS_PER_REV * 2.5);
+    }
 
     irQueue = xQueueCreate(10, sizeof(IrData));
 
