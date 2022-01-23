@@ -129,13 +129,7 @@ void TaskHandleInput(void* pvParameters) {
 void TaskTestStep(void* pvParameters) {
     (void)pvParameters;
 
-    for (;;) {
-        steppers[0].step(STEPS_PER_REV / 128);
-        if (uxQueueMessagesWaiting(irQueue) > 0) {
-            // This is necessary otherwise the context will never switch to input handling
-            vTaskDelay(1);
-        }
-    }
+    for (;;) { steppers[0].step(STEPS_PER_REV / 128); }
 }
 
 /***** MAIN FUNCTIONS *****/
@@ -154,14 +148,14 @@ void setup() {
                 "HandleInput",
                 128, // Stack size
                 NULL,
-                1, // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
+                3, // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
                 NULL);
 
     xTaskCreate(TaskTestStep,
                 "TestStep",
                 128, // Stack size
                 NULL,
-                3, // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
+                1, // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
                 NULL);
 
     initPCIInterruptForTinyReceiver();
