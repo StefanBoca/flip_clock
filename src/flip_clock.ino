@@ -1,18 +1,20 @@
 // FreeRTOS - Version: Latest
 // IRremote - Version: Latest
 // AccelStepper - Version: Latest
+// SevSeg - Version: Latest
 
 #define DEBUG
 
 #include <AccelStepper.h>
 #include <Arduino_FreeRTOS.h>
+#include <SevSeg.h>
 #include <queue.h>
 
 /***** TINY RECEIVER MACROS *****/
 // These need to come before the TinyIRReceiver include
 #define NO_LED_FEEDBACK_CODE
 #define TINY_RECEIVER_USE_ARDUINO_ATTACH_INTERRUPT
-#define IR_INPUT_PIN 2
+#define IR_INPUT_PIN 18
 
 #include "TinyIRReceiver.hpp"
 
@@ -27,53 +29,11 @@ AccelStepper steppers[]
 
 /***** DISPLAY CONSTANTS *****/
 
-/* sevent segment  pins A, B, C,  D, E, F,  G,  H */
-const int SS_PINS[8] = {6, 7, 8, 9, 10, 11, 12, 13};
+const byte NUM_DIGITS = 4;
+const byte DIGIT_PINS[NUM_DIGITS] = {2, 3, 4, 5};
+const byte SEGMENT_PINS[8] = {6, 7, 8, 9, 10, 11, 12, 13};
 
-// seven segment character look up table
-const bool SS_CHAR_LUT[10][8] = {
-    /* pin A, B, C, D, E, F, G, H */
-    /*0*/ {1, 1, 1, 1, 1, 1, 0, 0},
-    /*1*/ {0, 1, 1, 0, 0, 0, 0, 0},
-    /*2*/ {1, 1, 0, 1, 1, 0, 1, 0},
-    /*3*/ {1, 1, 1, 1, 0, 0, 1, 0},
-    /*4*/ {0, 1, 1, 0, 0, 1, 1, 0},
-    /*5*/ {1, 0, 1, 1, 0, 1, 1, 0},
-    /*6*/ {1, 0, 1, 1, 1, 1, 1, 0},
-    /*7*/ {1, 1, 1, 0, 0, 0, 0, 0},
-    /*8*/ {1, 1, 1, 1, 1, 1, 1, 0},
-    /*9*/ {1, 1, 1, 1, 0, 1, 1, 0},
-};
-
-/***** DISPLAY STATE *****/
-
-int currentDigit = 0;
-bool power = true;
-
-/***** DISPLAY FUNCTIONS *****/
-
-void clearDisplay() {
-    for (int i = 0; i < 8; i++) { digitalWrite(SS_PINS[i], LOW); }
-}
-
-void writeDisplay(int n) {
-    if (n < 0 || n > 9) {
-        // n out of range
-        clearDisplay();
-    }
-
-    for (int i = 0; i < 8; i++) { digitalWrite(SS_PINS[i], SS_CHAR_LUT[n][i]); }
-    currentDigit = n;
-    power = 1;
-}
-
-void toggleDisplayPower() {
-    if (power)
-        clearDisplay();
-    else
-        writeDisplay(currentDigit);
-    power = !power;
-}
+SevSeg sevSeg;
 
 /***** IR INTERRUPT ISR *****/
 
@@ -95,9 +55,8 @@ void handleReceivedTinyIRData(uint16_t address, uint8_t command, bool isRepeat) 
     Serial.print(isRepeat);
     Serial.println();
 #endif
-    BaseType_t xHigherPriorityTaskWoken;
     struct IrData irData = {address, command, isRepeat};
-    xQueueSendFromISR(irQueue, &irData, &xHigherPriorityTaskWoken);
+    xQueueSendFromISR(irQueue, &irData, NULL);
 }
 
 /***** TASKS *****/
@@ -110,17 +69,19 @@ void TaskHandleInput(void* pvParameters) {
         if (xQueueReceive(irQueue, &irData, portMAX_DELAY) == pdPASS) {
             if (irData.address == 0 && irData.isRepeat == 0) {
                 switch (irData.command) {
-                    case 0x16: /*0*/ writeDisplay(0); break;
-                    case 0x0C: /*1*/ writeDisplay(1); break;
-                    case 0x18: /*2*/ writeDisplay(2); break;
-                    case 0x5E: /*3*/ writeDisplay(3); break;
-                    case 0x08: /*4*/ writeDisplay(4); break;
-                    case 0x1C: /*5*/ writeDisplay(5); break;
-                    case 0x5A: /*6*/ writeDisplay(6); break;
-                    case 0x42: /*7*/ writeDisplay(7); break;
-                    case 0x53: /*8*/ writeDisplay(8); break;
-                    case 0x4A: /*9*/ writeDisplay(9); break;
-                    case 0x45: /*power*/ toggleDisplayPower(); break;
+                    case 0x16: /*0*/ sevSeg.setNumber(0); break;
+                    case 0x0C: /*1*/ sevSeg.setNumber(1); break;
+                    case 0x18: /*2*/ sevSeg.setNumber(2); break;
+                    case 0x5E: /*3*/ sevSeg.setNumber(3); break;
+                    case 0x08: /*4*/ sevSeg.setNumber(4); break;
+                    case 0x1C: /*5*/ sevSeg.setNumber(5); break;
+                    case 0x5A: /*6*/ sevSeg.setNumber(6); break;
+                    case 0x42: /*7*/ sevSeg.setNumber(7); break;
+                    case 0x53: /*8*/ sevSeg.setNumber(8); break;
+                    case 0x4A: /*9*/
+                        sevSeg.setNumber(9);
+                        break;
+                        //     case 0x45: /*power*/ toggleDisplayPower(); break;
                 }
             }
         }
@@ -137,6 +98,7 @@ void TaskTestStep(void* pvParameters) {
             if (s.distanceToGo() == 0) s.moveTo(-s.currentPosition());
             s.run();
         }
+        sevSeg.refreshDisplay();
     }
 }
 
@@ -146,7 +108,8 @@ void setup() {
     Serial.begin(115200);
 
     // Set all SS pins to output
-    for (int p : SS_PINS) { pinMode(p, OUTPUT); }
+    sevSeg.begin(COMMON_CATHODE, NUM_DIGITS, DIGIT_PINS, SEGMENT_PINS);
+    sevSeg.setNumber(3141, 3);
 
     for (auto& s : steppers) {
         s.setMaxSpeed(STEPPER_MAX_SPEED);
