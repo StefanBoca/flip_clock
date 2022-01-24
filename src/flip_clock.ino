@@ -3,12 +3,14 @@
 // AccelStepper - Version: Latest
 // SevSeg - Version: Latest
 
-#define DEBUG
+// #define DEBUG_IR
+
+#define INCLUDE_xSemaphoreGetMutexHolder 1
 
 #include <AccelStepper.h>
 #include <Arduino_FreeRTOS.h>
 #include <SevSeg.h>
-#include <queue.h>
+#include <semphr.h>
 
 /***** TINY RECEIVER MACROS *****/
 // These need to come before the TinyIRReceiver include
@@ -16,7 +18,11 @@
 #define TINY_RECEIVER_USE_ARDUINO_ATTACH_INTERRUPT
 #define IR_INPUT_PIN 18
 
+#ifdef DEBUG_IR
+    #define DEBUG
+#endif
 #include "TinyIRReceiver.hpp"
+#undef DEBUG
 
 /***** STEPPER CONSTANTS *****/
 
@@ -26,6 +32,7 @@
 
 AccelStepper steppers[]
     = {AccelStepper(AccelStepper::FULL4WIRE, 22, 26, 24, 28), AccelStepper(AccelStepper::FULL4WIRE, 23, 27, 25, 29)};
+SemaphoreHandle_t stepperMutex;
 
 /***** DISPLAY CONSTANTS *****/
 
@@ -34,6 +41,7 @@ const byte DIGIT_PINS[NUM_DIGITS] = {2, 3, 4, 5};
 const byte SEGMENT_PINS[8] = {6, 7, 8, 9, 10, 11, 12, 13};
 
 SevSeg sevSeg;
+SemaphoreHandle_t sevSegMutex;
 
 /***** IR INTERRUPT ISR *****/
 
@@ -46,7 +54,7 @@ struct IrData {
 };
 
 void handleReceivedTinyIRData(uint16_t address, uint8_t command, bool isRepeat) {
-#ifdef DEBUG
+#ifdef DEBUG_IR
     Serial.print(F("A=0x"));
     Serial.print(address, HEX);
     Serial.print(F(" C=0x"));
@@ -66,22 +74,25 @@ void TaskHandleInput(void* pvParameters) {
 
     IrData irData;
     for (;;) {
-        if (xQueueReceive(irQueue, &irData, portMAX_DELAY) == pdPASS) {
+        if (xQueueReceive(irQueue, &irData, portMAX_DELAY) > 0) {
             if (irData.address == 0 && irData.isRepeat == 0) {
-                switch (irData.command) {
-                    case 0x16: /*0*/ sevSeg.setNumber(0); break;
-                    case 0x0C: /*1*/ sevSeg.setNumber(1); break;
-                    case 0x18: /*2*/ sevSeg.setNumber(2); break;
-                    case 0x5E: /*3*/ sevSeg.setNumber(3); break;
-                    case 0x08: /*4*/ sevSeg.setNumber(4); break;
-                    case 0x1C: /*5*/ sevSeg.setNumber(5); break;
-                    case 0x5A: /*6*/ sevSeg.setNumber(6); break;
-                    case 0x42: /*7*/ sevSeg.setNumber(7); break;
-                    case 0x53: /*8*/ sevSeg.setNumber(8); break;
-                    case 0x4A: /*9*/
-                        sevSeg.setNumber(9);
-                        break;
-                        //     case 0x45: /*power*/ toggleDisplayPower(); break;
+                if (xSemaphoreTake(sevSegMutex, 10) == pdTRUE) {
+                    switch (irData.command) {
+                        case 0x16: /*0*/ sevSeg.setNumber(0); break;
+                        case 0x0C: /*1*/ sevSeg.setNumber(1); break;
+                        case 0x18: /*2*/ sevSeg.setNumber(2); break;
+                        case 0x5E: /*3*/ sevSeg.setNumber(3); break;
+                        case 0x08: /*4*/ sevSeg.setNumber(4); break;
+                        case 0x1C: /*5*/ sevSeg.setNumber(5); break;
+                        case 0x5A: /*6*/ sevSeg.setNumber(6); break;
+                        case 0x42: /*7*/ sevSeg.setNumber(7); break;
+                        case 0x52: /*8*/ sevSeg.setNumber(8); break;
+                        case 0x4A: /*9*/
+                            sevSeg.setNumber(9);
+                            break;
+                            //     case 0x45: /*power*/ toggleDisplayPower(); break;
+                    }
+                    xSemaphoreGive(sevSegMutex);
                 }
             }
         }
@@ -90,15 +101,24 @@ void TaskHandleInput(void* pvParameters) {
     }
 }
 
-void TaskTestStep(void* pvParameters) {
+void TaskUpdate(void* pvParameters) {
     (void)pvParameters;
 
     for (;;) {
-        for (auto& s : steppers) {
-            if (s.distanceToGo() == 0) s.moveTo(-s.currentPosition());
-            s.run();
+        // Run steppers
+        if (xSemaphoreTake(stepperMutex, 0) == pdTRUE) {
+            for (auto& s : steppers) {
+                if (s.distanceToGo() == 0) s.moveTo(-s.currentPosition());
+                s.run();
+            }
+            xSemaphoreGive(stepperMutex);
         }
-        sevSeg.refreshDisplay();
+
+        // Update display
+        if (xSemaphoreTake(sevSegMutex, 0) == pdTRUE) {
+            sevSeg.refreshDisplay();
+            xSemaphoreGive(sevSegMutex);
+        }
     }
 }
 
@@ -106,6 +126,7 @@ void TaskTestStep(void* pvParameters) {
 
 void setup() {
     Serial.begin(115200);
+    initPCIInterruptForTinyReceiver();
 
     // Set all SS pins to output
     sevSeg.begin(COMMON_CATHODE, NUM_DIGITS, DIGIT_PINS, SEGMENT_PINS);
@@ -117,7 +138,10 @@ void setup() {
         s.moveTo(STEPS_PER_REV * 2.5);
     }
 
-    irQueue = xQueueCreate(10, sizeof(IrData));
+    // TODO: create everything statically
+    stepperMutex = xSemaphoreCreateMutex();
+    sevSegMutex = xSemaphoreCreateMutex();
+    irQueue = xQueueCreate(4, sizeof(IrData));
 
     xTaskCreate(TaskHandleInput,
                 "HandleInput",
@@ -126,14 +150,12 @@ void setup() {
                 3, // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
                 NULL);
 
-    xTaskCreate(TaskTestStep,
-                "TestStep",
+    xTaskCreate(TaskUpdate,
+                "Update",
                 128, // Stack size
                 NULL,
                 1, // Priority, with 3 (configMAX_PRIORITIES - 1) being the highest, and 0 being the lowest.
                 NULL);
-
-    initPCIInterruptForTinyReceiver();
 }
 
 void loop() {
